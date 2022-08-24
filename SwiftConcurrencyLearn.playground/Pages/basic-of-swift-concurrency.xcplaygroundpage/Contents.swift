@@ -403,10 +403,190 @@ func someSyncMethod() {
 /// 其他大部分情况下，async let 和 Task group 可以相互混用或替代
 ///
 
-/// ## actor 模型和数据隔离
+/// ## actor 模型 (参与者模型) 和数据隔离
 ///
 /// 在上面的示例中
 /// 在 progressFromScratch 里，先将 results 设置为 []，然后再处理每条数据，并将结果添加到 results 里
 /// 在 loadResultRemotely 里，直接将结果赋值给了 results
 /// 一般来说，我们认为不论 processFromScratch 和 loadResultRemotely 执行的先后顺序如何，我们总应该得到唯一确定的 results，但事实上，如果我们对 loadResultRemotely 的 Task.sleep 时长进行调整，使它与 processFromScratch 所耗费的时间相仿，则会出现出人意料的结果
 /// 出现问题的原因在于，我们在 addTask 时为两个任务指定了不同的优先级，因此它们中的代码将运行在不同的调度线程上，两个异步操作在不同线程同时访问了 results，造成了数据竞争
+///
+///                                ┌─────────────────────┐
+///                                │        result       │
+///                                └─────────────────────┘
+///                                      ▲ ▲       ▲
+///                                   [] │ │       │appending * 3
+/// ┌──────────────────────────────────┐ │ │ ┌─────┴─────┐
+/// │ loadFromDatabase + loadSignature ├─┘ │ │ appending │
+/// └──────────────────────────────────┘   │ └───────────┘
+///                                        │
+/// ┌──────────────────────────────────┐   │
+/// │        loadResultRemotely        ├───┘3 elements
+/// └──────────────────────────────────┘
+///
+/// 当出现 progressFromScratch 和 loadResultRemotely 同时操作 results 时，我们会得到一个运行时错误
+///
+/// ```swift
+/// for _ in 0 ..< 10_000 {
+///   someSyncMethod()
+/// }
+///
+/// // Thread 10: EXC_ACCESS (code=1, address=0x00000000000)
+/// ```
+///
+/// 为了确保资源在不同的运算之间被安全的共享和访问
+/// 以前通常的做法是将相关的代码放入一个串行的 dispatch_queue 中，然后以同步的方式把对资源的访问派发到队列中去执行，这样我们就可以避免多个线程同时对资源进行访问
+class Holder {
+  
+  private let _queue = DispatchQueue(label: "resultholder.queue")
+  
+  private var _results: [String] = []
+  
+  func getResults() -> [String] {
+    _queue.sync { return self._results }
+  }
+  
+  func setResults(_ results: [String]) {
+    _queue.sync { self._results = results }
+  }
+  
+  func append(_ value: String) {
+    _queue.sync { self._results.append(value) }
+  }
+}
+
+var holder = Holder()
+
+func addAppending_1(_ value: String, to string: String) {
+  holder.append(value.appending(string))
+}
+
+func loadResultRemotely_1() async throws {
+  try await Task.sleep(nanoseconds: 2 * NSEC_PER_SEC)
+  holder.setResults(["data1^sig", "data2^sig", "data3^sig"])
+}
+
+func processFromScratch_2() async throws {
+  Task {
+    await withThrowingTaskGroup(of: Void.self) { (group) in
+      group.addTask {
+        let loadStrings = try await loadFromDatabase_1()
+        let loadSignature = try await loadSignature_2()
+        
+        if let strings = loadStrings {
+          if let signature = loadSignature {
+            strings.forEach {
+              addAppending_1(signature, to: $0)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+func someSyncMethod_1() {
+  Task {
+    await withThrowingTaskGroup(of: Void.self) { (group) in
+      /// * group 满足 AsyncSequence 协议，可以使用 for await 的方式用类似同步循环的写法来访问异步操作的结果
+      /// * 通过调用 groud 的 cancelAll，可以在适当的情况下将任务标记为取消
+      group.addTask {
+        try await loadResultRemotely_1()
+      }
+      
+      group.addTask(priority: .low) {
+        try await processFromScratch_2()
+      }
+    }
+  }
+  
+  print("someSyncMethod_1 results: \n\(holder.getResults())\n")
+}
+
+/// ```swift
+/// for _ in 0 ..< 10_000 {
+///   someSyncMethod_1()
+/// }
+/// ```
+///
+/// 存在的问题
+/// * 大量且易错的模版代码：凡是涉及 results 的操作，都需要使用 queue.sync 包围起来，但是编译器并没有给我们任何保证，当有更多资源需要保护时，代码复杂度也将爆炸式的上升
+/// * 需要警惕死锁问题：在一个 queue.sync 中调用另一个 queue.sync 的方法，会造成线程死锁，随着复杂度增加，理解当前代码运行是由哪一个队列派发的、运行于哪一个线程上是困难的，需要精心设计以避免重复派发
+///
+/// 在一定程度上可以使用 async 替代 sync 派发缓解死锁问题；或者放弃队列，使用锁来解决资源竞争的问题。但无论何种解决方案都需要开发者对线程调度和基于共享内存的数据模型有深刻理解
+actor Holder_1 {
+  
+  private var _results: [String] = []
+  
+  func getResults() -> [String] {
+    return self._results
+  }
+  
+  func setResults(_ results: [String]) {
+    self._results = results
+  }
+  
+  func append(_ value: String) {
+    self._results.append(value)
+  }
+}
+
+var holder_1 = Holder_1()
+
+func addAppending_2(_ value: String, to string: String) {
+  Task {
+    await holder_1.append(value.appending(string))
+  }
+}
+
+func loadResultRemotely_2() async throws {
+  try await Task.sleep(nanoseconds: 2 * NSEC_PER_SEC)
+  await holder_1.setResults(["data1^sig", "data2^sig", "data3^sig"])
+}
+
+func processFromScratch_3() async throws {
+  Task {
+    await withThrowingTaskGroup(of: Void.self) { (group) in
+      group.addTask {
+        let loadStrings = try await loadFromDatabase_1()
+        let loadSignature = try await loadSignature_2()
+        
+        if let strings = loadStrings {
+          if let signature = loadSignature {
+            strings.forEach {
+              addAppending_2(signature, to: $0)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+func someSyncMethod_2() {
+  Task {
+    await withThrowingTaskGroup(of: Void.self) { (group) in
+      /// * group 满足 AsyncSequence 协议，可以使用 for await 的方式用类似同步循环的写法来访问异步操作的结果
+      /// * 通过调用 groud 的 cancelAll，可以在适当的情况下将任务标记为取消
+      group.addTask {
+        try await loadResultRemotely_2()
+      }
+      
+      group.addTask(priority: .low) {
+        try await processFromScratch_3()
+      }
+    }
+    
+    print("someSyncMethod_2 results: \n\(await holder_1.getResults())\n")
+  }
+}
+
+for _ in 0 ..< 10_000 {
+  someSyncMethod_2()
+}
+/// actor 内部会提供一个隔离域：在 actor 内部对自身存储属性或其他方法的访问可以不加任何限制，这些代码会被自动隔离在被封装的‘私有队列’里
+/// 但从外部对 actor 的成员进行访问时，编译器会要求切换到 actor 的隔离域，以确保数据安全。
+/// 在这个要求发生时，当前执行的程序可能会发生暂停，编译器将自动把要跨隔离域的函数转换为异步函数，并要求我们使用 await 来进行调用
+///
+/// ⚠️ 数据隔离只解决同时访问造成的内存问题，而数据正确性关系到 actor 的可重入 (reentrancy)
+/// ⚠️ actor 类型还没有提供指定具体运行方式的手段，我们可以使用 @MainActor 来确保 UI 线程的隔离，但是对于一般的 actor，我们还无法指定隔离代码应该以怎样的方式运行在那一个线程
