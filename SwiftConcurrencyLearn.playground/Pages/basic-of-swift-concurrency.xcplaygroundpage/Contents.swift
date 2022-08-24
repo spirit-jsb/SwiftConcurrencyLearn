@@ -369,7 +369,7 @@ func someSyncMethod() {
     }
   }
   
-  print("structured concurrency results: \n\(results)\n")
+  print("someSyncMethod results: \n\(results)\n")
 }
 /// 对于 processFromScratch 我们将它特别指定为 .low 的优先级，这会导致该任务在另一个低优先级线程中被调度
 ///
