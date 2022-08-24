@@ -29,7 +29,7 @@ func addAppending(_ value: String, to string: String) {
 /// synchronous load signature from remote (blocking actions)
 func loadSignature() throws -> String? {
   // 从网络读取一个字符串
-  let data = try Data(contentsOf: URL(string: "https://example.com")!)
+  let data = try Data(contentsOf: URL(string: "https://httpbin.org/base64/swift-concurrency-learn")!)
   return String(data: data, encoding: .utf8)
 }
 ///                │            │         │
@@ -47,7 +47,7 @@ func loadSignature() throws -> String? {
 func loadSignature_1(_ completion: @escaping (String?, Error?) -> Void) {
   DispatchQueue.global().async {
     do {
-      let data = try Data(contentsOf: URL(string: "https://example.com")!)
+      let data = try Data(contentsOf: URL(string: "https://httpbin.org/base64/swift-concurrency-learn")!)
       DispatchQueue.main.async {
         completion(String(data: data, encoding: .utf8), nil)
       }
@@ -225,7 +225,7 @@ loadFromDatabase { (strings, error) in
 ///
 /// using async function to load signature from remote
 func loadSignature_2() async throws -> String? {
-  let (data, _) = try await URLSession.shared.data(from: URL(string: "https://example.com")!)
+  let (data, _) = try await URLSession.shared.data(from: URL(string: "https://httpbin.org/base64/swift-concurrency-learn")!)
   return String(data: data, encoding: .utf8)
 }
 /// async 关键字会帮助编译器确保：
