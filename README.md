@@ -14,3 +14,5 @@ Swift 并发内容构成：
 Swift 并发底层机制：
 * 协作式线程池的调度方式
 * 异步函数的线程模型和执行器
+
+## [Swift 并发初步](https://github.com/spirit-jsb/SwiftConcurrencyLearn/blob/main/SwiftConcurrencyLearn.playground/Pages/basic-of-swift-concurrency.xcplaygroundpage/Contents.swift)
